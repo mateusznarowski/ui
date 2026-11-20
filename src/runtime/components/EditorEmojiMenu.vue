@@ -18,6 +18,11 @@ export interface EditorEmojiMenuItem {
 
 export interface EditorEmojiMenuProps<T extends EditorEmojiMenuItem = EditorEmojiMenuItem> extends Partial<Pick<EditorMenuOptions<T>, 'editor' | 'char' | 'pluginKey' | 'filterFields' | 'limit' | 'options' | 'suggestion' | 'appendTo'>> {
   /**
+   * Accessible name for the list of suggestions.
+   * @defaultValue 'Suggestions'
+   */
+  ariaLabel?: string
+  /**
    * @defaultValue 'md'
    */
   size?: EditorEmojiMenu['variants']['size']
@@ -58,6 +63,7 @@ onMounted(async () => {
 
   menu = useEditorMenu({
     editor: props.editor,
+    ariaLabel: toRef(() => props.ariaLabel),
     char: props.char,
     pluginKey: props.pluginKey,
     items: toRef(() => props.items),

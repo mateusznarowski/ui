@@ -14,8 +14,15 @@ import type { FloatingUIOptions } from '../types/editor'
 import { buildFloatingUIMiddleware } from '../utils/editor'
 import { get, isArrayOfArray } from '../utils'
 
+let nextMenuId = 0
+
 export interface EditorMenuOptions<T = any> {
   editor: Editor
+  /**
+   * Accessible name for the list of suggestions.
+   * @defaultValue 'Suggestions'
+   */
+  ariaLabel?: MaybeRef<string | undefined>
   /**
    * The trigger character (e.g., '/', '@', ':')
    */
@@ -86,6 +93,7 @@ export interface EditorMenuOptions<T = any> {
 }
 
 export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
+  const menuId = `nuxt-ui-editor-menu-${++nextMenuId}`
   const filteredItems: Ref<T[]> = ref([])
   const selectedIndex = ref(0)
   const menuState = ref<'closed' | 'open'>('closed')
@@ -96,13 +104,26 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
   let commandFn: ((item: T) => void) | null = null
   let keyDownHandler: ((props: { event: KeyboardEvent }) => boolean) | null = null
   let globalKeyHandler: ((e: KeyboardEvent) => void) | null = null
-  let blurHandler: (() => void) | null = null
   let triggerClientRect: (() => DOMRect | null) | null = null
   let handleHover: ((index: number) => void) | null = null
   let scrollHandler: (() => void) | null = null
   let stopItemsWatch: (() => void) | null = null
 
   const { score } = useFilter()
+
+  const containsFocusTarget = (target: EventTarget | null) => target instanceof Node
+    && (options.editor.view.dom.contains(target) || element?.contains(target))
+
+  const onFocusOut = (event: FocusEvent) => {
+    if (containsFocusTarget(event.relatedTarget)) return
+
+    setTimeout(() => {
+      if (menuState.value === 'open' && !options.editor.isDestroyed && !containsFocusTarget(document.activeElement)) {
+        const { view } = options.editor
+        view.dispatch(view.state.tr.setMeta(pluginKeyInstance, { exit: true }))
+      }
+    }, 0)
+  }
 
   // Helper function to cleanup menu immediately (no animation)
   const cleanupMenu = () => {
@@ -115,10 +136,8 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
       document.removeEventListener('keydown', globalKeyHandler, true)
       globalKeyHandler = null
     }
-    if (blurHandler) {
-      options.editor.view.dom.removeEventListener('blur', blurHandler)
-      blurHandler = null
-    }
+    options.editor.view.dom.removeEventListener('blur', onFocusOut)
+    element?.removeEventListener('focusout', onFocusOut)
     if (scrollHandler) {
       window.removeEventListener('scroll', scrollHandler, true)
       scrollHandler = null
@@ -216,11 +235,8 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
   })
 
   // Get only selectable items (excluding labels and separators) for keyboard navigation
-  const selectableItems = computed<T[]>(() => {
-    return filteredItems.value.filter((item: any) => {
-      return item.type !== 'label' && item.type !== 'separator'
-    })
-  })
+  const isOption = (item: T) => (item as any).type !== 'label' && (item as any).type !== 'separator'
+  const selectableItems = computed(() => filteredItems.value.filter(isOption))
 
   // Build middleware array based on options (following BubbleMenu pattern)
   const floatingUIOptions = defu(options.options, {
@@ -268,7 +284,7 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
     // Add global keyboard listener for navigation
     if (!globalKeyHandler) {
       globalKeyHandler = (e: KeyboardEvent) => {
-        if (keyDownHandler) {
+        if (keyDownHandler && containsFocusTarget(e.target)) {
           const handled = keyDownHandler({ event: e })
           if (handled) {
             e.preventDefault()
@@ -279,19 +295,7 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
       document.addEventListener('keydown', globalKeyHandler, true)
     }
 
-    // Add blur listener to close menu when editor loses focus
-    if (!blurHandler) {
-      blurHandler = () => {
-        setTimeout(() => {
-          if (menuState.value === 'open') {
-            // Dispatch exit transaction to properly close the suggestion session
-            const tr = options.editor.view.state.tr.setMeta(pluginKeyInstance, { exit: true })
-            options.editor.view.dispatch(tr)
-          }
-        }, 0)
-      }
-      options.editor.view.dom.addEventListener('blur', blurHandler)
-    }
+    options.editor.view.dom.addEventListener('blur', onFocusOut)
 
     // Add scroll listener to update position on scroll
     if (!scrollHandler) {
@@ -331,6 +335,7 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
     element = document.createElement('div')
     element.style.position = floatingUIOptions.strategy
     element.style.zIndex = '50'
+    element.addEventListener('focusout', onFocusOut)
 
     handleMouseDown = (e: MouseEvent) => {
       e.preventDefault()
@@ -422,73 +427,84 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
       }
 
       return () => {
-        const groupsData = menuProps.groups as T[][]
-        // Build a map of selectable items to their indices
-        const selectableIndexMap = new Map<T, number>()
-        let selectableCounter = 0
-        for (const group of groupsData) {
-          for (const item of group) {
-            const itemData = item as any
-            if (itemData.type !== 'label' && itemData.type !== 'separator') {
-              selectableIndexMap.set(item, selectableCounter++)
-            }
-          }
-        }
+        let nextOptionIndex = 0
 
         return h('div', {
           'class': options.ui.value.content(),
-          'role': 'listbox',
           'data-state': menuProps.state
         }, [
           h('div', {
-            class: options.ui.value.viewport(),
-            role: 'presentation'
-          }, groupsData.map((group, groupIndex) =>
-            h('div', {
+            'class': options.ui.value.viewport(),
+            'role': 'listbox',
+            'tabindex': 0,
+            'aria-label': unref(options.ariaLabel)?.trim() || 'Suggestions'
+          }, (menuProps.groups as T[][]).map((group, groupIndex) => {
+            // A flat group can contain several headings. Each names the options below it.
+            let section: T[] = []
+            const sections = [section]
+            for (const item of group) {
+              if ((item as any).type === 'label' && section.length) {
+                section = []
+                sections.push(section)
+              }
+              section.push(item)
+            }
+
+            return h('div', {
               key: `group-${groupIndex}`,
               class: options.ui.value.group(),
-              role: 'group'
-            }, group.map((item, itemInGroupIndex) => {
-              const itemData = item as any
-
-              // Render label
-              if (itemData.type === 'label') {
-                return h('div', {
-                  key: `label-${groupIndex}-${itemInGroupIndex}`,
-                  class: options.ui.value.label({ class: itemData.class })
-                }, options.renderItem(item, options.ui))
-              }
-
-              // Render separator
-              if (itemData.type === 'separator') {
-                return h('div', {
-                  key: `separator-${groupIndex}-${itemInGroupIndex}`,
-                  class: options.ui.value.separator({ class: itemData.class }),
-                  role: 'separator'
-                })
-              }
-
-              // Render regular item
-              const selectableIndex = selectableIndexMap.get(item)!
-              const isHighlighted = selectableIndex === menuProps.selectedIndex
+              role: 'presentation'
+            }, sections.map((section, sectionIndex) => {
+              const labelId = (section[0] as any)?.type === 'label' && section.some(isOption)
+                ? `${menuId}-group-${groupIndex}-${sectionIndex}`
+                : undefined
 
               return h('div', {
-                'key': `item-${selectableIndex}`,
-                'class': options.ui.value.item({ class: itemData.class, active: false }),
-                'role': 'option',
-                'aria-selected': isHighlighted,
-                'data-highlighted': isHighlighted ? '' : undefined,
-                'data-disabled': itemData.disabled ? '' : undefined,
-                'onMousedown': (e: MouseEvent) => handleClick(e, item, selectableIndex),
-                'onMouseenter': () => handleMouseEnter(selectableIndex),
-                'ref': (el: any) => {
-                  if (el && isHighlighted) {
-                    el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-                  }
+                'key': sectionIndex,
+                'role': labelId ? 'group' : 'presentation',
+                'aria-labelledby': labelId
+              }, section.map((item, index) => {
+                const itemData = item as any
+
+                if (itemData.type === 'label') {
+                  return h('div', {
+                    'key': `label-${index}`,
+                    'id': labelId,
+                    'role': 'presentation',
+                    'aria-hidden': labelId ? undefined : true,
+                    'class': options.ui.value.label({ class: itemData.class })
+                  }, options.renderItem(item, options.ui))
                 }
-              }, options.renderItem(item, options.ui))
+
+                if (itemData.type === 'separator') {
+                  return h('div', {
+                    'key': `separator-${index}`,
+                    'class': options.ui.value.separator({ class: itemData.class }),
+                    'aria-hidden': true
+                  })
+                }
+
+                const selectableIndex = nextOptionIndex++
+                const isHighlighted = selectableIndex === menuProps.selectedIndex
+
+                return h('div', {
+                  'key': `item-${selectableIndex}`,
+                  'class': options.ui.value.item({ class: itemData.class, active: false }),
+                  'role': 'option',
+                  'aria-selected': isHighlighted,
+                  'data-highlighted': isHighlighted ? '' : undefined,
+                  'data-disabled': itemData.disabled ? '' : undefined,
+                  'onMousedown': (e: MouseEvent) => handleClick(e, item, selectableIndex),
+                  'onMouseenter': () => handleMouseEnter(selectableIndex),
+                  'ref': (el: any) => {
+                    if (el && isHighlighted) {
+                      el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+                    }
+                  }
+                }, options.renderItem(item, options.ui))
+              }))
             }))
-          ))
+          }))
         ])
       }
     }
@@ -558,7 +574,8 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
         }
 
         // Handle Enter or Tab
-        if (event.key === 'Enter' || event.key === 'Tab') {
+        const focusInMenu = !!element?.contains(event.target as Node)
+        if (event.key === 'Enter' || (event.key === 'Tab' && !focusInMenu)) {
           const selectedItem = selectableItems.value[selectedIndex.value]
           if (selectedItem && commandFn) {
             commandFn(selectedItem)
@@ -664,10 +681,8 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
       document.removeEventListener('keydown', globalKeyHandler, true)
       globalKeyHandler = null
     }
-    if (blurHandler) {
-      options.editor.view.dom.removeEventListener('blur', blurHandler)
-      blurHandler = null
-    }
+    options.editor.view.dom.removeEventListener('blur', onFocusOut)
+    element?.removeEventListener('focusout', onFocusOut)
     if (scrollHandler) {
       window.removeEventListener('scroll', scrollHandler, true)
       scrollHandler = null

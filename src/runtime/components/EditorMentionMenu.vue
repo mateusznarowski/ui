@@ -23,6 +23,11 @@ export interface EditorMentionMenuItem {
 
 export interface EditorMentionMenuProps<T extends EditorMentionMenuItem = EditorMentionMenuItem> extends Partial<Pick<EditorMenuOptions<T>, 'editor' | 'char' | 'pluginKey' | 'filterFields' | 'limit' | 'options' | 'suggestion' | 'appendTo' | 'ignoreFilter'>> {
   /**
+   * Accessible name for the list of suggestions.
+   * @defaultValue 'Suggestions'
+   */
+  ariaLabel?: string
+  /**
    * @defaultValue 'md'
    */
   size?: EditorMentionMenu['variants']['size']
@@ -66,6 +71,7 @@ onMounted(async () => {
 
   menu = useEditorMenu({
     editor: props.editor,
+    ariaLabel: toRef(() => props.ariaLabel),
     char: props.char,
     pluginKey: props.pluginKey,
     items: toRef(() => props.items),
