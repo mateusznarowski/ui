@@ -56,7 +56,9 @@ export interface EditorSuggestionMenuProps<T extends EditorSuggestionMenuItem = 
 </script>
 
 <script setup lang="ts" generic="T extends EditorSuggestionMenuItem">
-import { computed, h, inject, onMounted, onBeforeUnmount, nextTick, toRef } from 'vue'
+import { computed, h, inject, onMounted, onBeforeUnmount, nextTick, ref, toRef, watch } from 'vue'
+import { VisuallyHidden } from 'reka-ui'
+import { useTimeoutFn } from '@vueuse/core'
 import { useAppConfig } from '#imports'
 import { useEditorMenu } from '../composables/useEditorMenu'
 import { createHandlers } from '../utils/editor'
@@ -79,6 +81,19 @@ const ui = computed(() => tv({ extend: theme, ...(appConfig.ui?.editorSuggestion
 }))
 
 let menu: ReturnType<typeof useEditorMenu> | null = null
+const announcement = ref('')
+const searchTerm = ref('')
+let pendingAnnouncement = ''
+
+const highlightAnnouncement = useTimeoutFn(() => {
+  announcement.value = pendingAnnouncement
+  pendingAnnouncement = ''
+}, 250, { immediate: false })
+
+// Wait for a pause in typing even when later keystrokes keep the same option highlighted.
+watch(searchTerm, () => {
+  if (pendingAnnouncement) highlightAnnouncement.start()
+})
 
 onMounted(async () => {
   await nextTick()
@@ -99,6 +114,18 @@ onMounted(async () => {
     suggestion: props.suggestion,
     appendTo: props.appendTo,
     ui,
+    searchTerm,
+    onAutoHighlight: (item) => {
+      const label = item?.label ?? ''
+      if (label && searchTerm.value) {
+        pendingAnnouncement = label
+        highlightAnnouncement.start()
+      } else {
+        pendingAnnouncement = ''
+        highlightAnnouncement.stop()
+        announcement.value = label
+      }
+    },
     onSelect: (editor, range, item) => {
       // Skip if it's a label (non-interactive)
       if (item.type === 'label' || item.type === 'separator') return
@@ -149,5 +176,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div />
+  <VisuallyHidden as="div" role="status" aria-live="polite" aria-atomic="true">
+    {{ announcement }}
+  </VisuallyHidden>
 </template>

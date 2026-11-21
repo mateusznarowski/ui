@@ -64,6 +64,10 @@ export interface EditorMenuOptions<T = any> {
    */
   onSelect: (editor: Editor, range: any, item: T) => void
   /**
+   * Receive the option highlighted on open or after filtering, or undefined to clear the announcement.
+   */
+  onAutoHighlight?: (item: T | undefined) => void
+  /**
    * Function to render each menu item
    */
   renderItem: (item: T, ui: ComputedRef<any>) => any
@@ -130,6 +134,7 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
     if (menuState.value === 'closed') return
 
     menuState.value = 'closed'
+    options.onAutoHighlight?.(undefined)
 
     // Remove event listeners
     if (globalKeyHandler) {
@@ -249,6 +254,12 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
     return { byItem, ordered }
   })
   const activeOptionId = computed(() => optionIds.value.ordered[selectedIndex.value])
+
+  const moveHighlight = (index: number) => {
+    if (index === selectedIndex.value) return
+    selectedIndex.value = index
+    options.onAutoHighlight?.(undefined)
+  }
 
   // Build middleware array based on options (following BubbleMenu pattern)
   const floatingUIOptions = defu(options.options, {
@@ -485,7 +496,7 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
                   'data-highlighted': isHighlighted ? '' : undefined,
                   'data-disabled': itemData.disabled ? '' : undefined,
                   'onMousedown': (e: MouseEvent) => handleClick(e, item),
-                  'onMouseenter': () => { selectedIndex.value = selectableIndex },
+                  'onMouseenter': () => moveHighlight(selectableIndex),
                   'ref': (el: any) => {
                     if (el && isHighlighted) {
                       el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
@@ -550,13 +561,13 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
 
         // Handle ArrowUp
         if (event.key === 'ArrowUp') {
-          selectedIndex.value = (selectedIndex.value + selectableItems.value.length - 1) % selectableItems.value.length
+          moveHighlight((selectedIndex.value + selectableItems.value.length - 1) % selectableItems.value.length)
           return true
         }
 
         // Handle ArrowDown
         if (event.key === 'ArrowDown') {
-          selectedIndex.value = (selectedIndex.value + 1) % selectableItems.value.length
+          moveHighlight((selectedIndex.value + 1) % selectableItems.value.length)
           return true
         }
 
@@ -601,6 +612,7 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
           }
 
           showMenu()
+          options.onAutoHighlight?.(selectableItems.value[selectedIndex.value])
         },
         onUpdate: (suggestionProps: SuggestionProps) => {
           // Update the command function
@@ -611,6 +623,8 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
           if (suggestionProps.loading) {
             return
           }
+
+          const previousOptionId = renderer ? activeOptionId.value : undefined
 
           // When ignoreFilter is true, always use fresh items from the reactive source
           filteredItems.value = options.ignoreFilter
@@ -631,6 +645,10 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
           // Show menu if it was hidden
           if (!renderer) {
             showMenu()
+          }
+
+          if (activeOptionId.value !== previousOptionId) {
+            options.onAutoHighlight?.(selectableItems.value[selectedIndex.value])
           }
 
           if (element) {

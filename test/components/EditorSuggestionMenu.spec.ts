@@ -77,6 +77,8 @@ describe('Editor suggestion menus', () => {
     onTestFinished(() => wrapper.unmount())
 
     const editable = editor.view.dom
+    const status = wrapper.get('[role=status]')
+    expect(status.text()).toBe('')
     editable.focus()
     editor.commands.insertContent('/')
     const listbox = await getListbox(parent)
@@ -84,6 +86,7 @@ describe('Editor suggestion menus', () => {
     expect(first!.id).toBeTruthy()
     expect(editable.getAttribute('aria-controls')).toBe(listbox.id)
     expect(editable.getAttribute('aria-activedescendant')).toBe(first!.id)
+    expect(status.text()).toBe('Paragraph')
 
     Object.defineProperties(listbox, {
       clientHeight: { value: 40 },
@@ -94,14 +97,31 @@ describe('Editor suggestion menus', () => {
     editable.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true, cancelable: true }))
     expect(listbox.scrollTop).toBe(0)
 
-    editor.commands.insertContent('heading')
-    await vi.waitFor(() => expect(editable.getAttribute('aria-activedescendant')).toBe(second!.id))
-    expect(document.getElementById(first!.id)).toBeNull()
+    vi.useFakeTimers()
+    onTestFinished(() => {
+      vi.useRealTimers()
+    })
+
+    editor.commands.insertContent('h')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(editable.getAttribute('aria-activedescendant')).toBe(second!.id)
     expect(document.getElementById(second!.id)?.textContent).toBe('Heading 1')
+    expect(status.text()).toBe('Paragraph')
+
+    await vi.advanceTimersByTimeAsync(150)
+    editor.commands.insertContent('ea')
+    await vi.advanceTimersByTimeAsync(150)
+    expect(document.getElementById(first!.id)).toBeNull()
+    expect(status.text()).toBe('Paragraph')
+
+    editor.commands.insertContent('d')
+    await vi.advanceTimersByTimeAsync(250)
+    expect(status.text()).toBe('Heading 1')
 
     editable.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
     await vi.waitFor(() => expect(editable.getAttribute('aria-activedescendant')).toBe(third!.id))
     expect(document.activeElement).toBe(editable)
+    expect(status.text()).toBe('')
 
     editable.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     await vi.waitFor(() => expect(parent.querySelector('[role=listbox]')).toBeNull())
@@ -112,6 +132,35 @@ describe('Editor suggestion menus', () => {
     expect(editable.hasAttribute('aria-activedescendant')).toBe(false)
     expect(editable.getAttribute('role')).toBe('textbox')
     expect(editable.getAttribute('aria-label')).toBe('Document')
+  })
+
+  it('adds a fresh announcement when reopening with the same highlighted option', async ({ onTestFinished }) => {
+    const { parent, editor } = mountEditor(onTestFinished)
+    const wrapper = await mountSuspended(EditorSuggestionMenu, {
+      props: {
+        editor,
+        appendTo: parent,
+        items: [{ kind: 'paragraph', label: 'Paragraph' }]
+      }
+    })
+    onTestFinished(() => wrapper.unmount())
+
+    const status = wrapper.get('[role=status]')
+    const editable = editor.view.dom
+    editable.focus()
+
+    editor.commands.insertContent('/')
+    await getListbox(parent)
+    expect(status.text()).toBe('Paragraph')
+
+    editable.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await vi.waitFor(() => expect(status.text()).toBe(''))
+    editor.commands.deleteRange({ from: 1, to: 2 })
+    editor.commands.insertContent('/')
+
+    await getListbox(parent)
+    expect(status.text()).toBe('Paragraph')
+    expect(document.activeElement).toBe(editable)
   })
 
   it.for([
