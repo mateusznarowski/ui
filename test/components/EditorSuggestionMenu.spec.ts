@@ -4,6 +4,8 @@ import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { describe, expect, it, vi } from 'vitest'
 import { axe } from 'vitest-axe'
 import EditorSuggestionMenu from '../../src/runtime/components/EditorSuggestionMenu.vue'
+import EditorMentionMenu from '../../src/runtime/components/EditorMentionMenu.vue'
+import EditorEmojiMenu from '../../src/runtime/components/EditorEmojiMenu.vue'
 
 function mountEditor(onTestFinished: (callback: () => void) => void) {
   const parent = document.body.appendChild(document.createElement('div'))
@@ -57,5 +59,105 @@ describe('Editor suggestion menus', () => {
     expect(groups.map(group => document.getElementById(group.getAttribute('aria-labelledby')!)?.textContent)).toEqual(['Text', 'Lists'])
     expect(groups.map(group => group.querySelector('[role=option]')?.textContent)).toEqual(['Heading 1', 'Bullet list'])
     expect(listbox.querySelector('[role=separator]')).toBeNull()
+  })
+
+  it('exposes the active option and keeps keyboard navigation in the editor', async ({ onTestFinished }) => {
+    const { parent, editor } = mountEditor(onTestFinished)
+    const wrapper = await mountSuspended(EditorSuggestionMenu, {
+      props: {
+        editor,
+        appendTo: parent,
+        items: [
+          { kind: 'paragraph', label: 'Paragraph' },
+          { kind: 'heading', level: 1, label: 'Heading 1' },
+          { kind: 'heading', level: 2, label: 'Heading 2' }
+        ]
+      }
+    })
+    onTestFinished(() => wrapper.unmount())
+
+    const editable = editor.view.dom
+    editable.focus()
+    editor.commands.insertContent('/')
+    const listbox = await getListbox(parent)
+    const [first, second, third] = listbox.querySelectorAll('[role=option]')
+    expect(first!.id).toBeTruthy()
+    expect(editable.getAttribute('aria-controls')).toBe(listbox.id)
+    expect(editable.getAttribute('aria-activedescendant')).toBe(first!.id)
+
+    Object.defineProperties(listbox, {
+      clientHeight: { value: 40 },
+      scrollHeight: { value: 120 }
+    })
+    editable.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true, cancelable: true }))
+    expect(listbox.scrollTop).toBe(40)
+    editable.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true, cancelable: true }))
+    expect(listbox.scrollTop).toBe(0)
+
+    editor.commands.insertContent('heading')
+    await vi.waitFor(() => expect(editable.getAttribute('aria-activedescendant')).toBe(second!.id))
+    expect(document.getElementById(first!.id)).toBeNull()
+    expect(document.getElementById(second!.id)?.textContent).toBe('Heading 1')
+
+    editable.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+    await vi.waitFor(() => expect(editable.getAttribute('aria-activedescendant')).toBe(third!.id))
+    expect(document.activeElement).toBe(editable)
+
+    editable.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    await vi.waitFor(() => expect(parent.querySelector('[role=listbox]')).toBeNull())
+    expect(editor.state.doc.firstChild?.type.name).toBe('heading')
+    expect(editor.state.doc.firstChild?.attrs.level).toBe(2)
+    expect(editor.getText()).not.toContain('/')
+    expect(editable.hasAttribute('aria-controls')).toBe(false)
+    expect(editable.hasAttribute('aria-activedescendant')).toBe(false)
+    expect(editable.getAttribute('role')).toBe('textbox')
+    expect(editable.getAttribute('aria-label')).toBe('Document')
+  })
+
+  it.for([
+    {
+      kind: 'mention',
+      trigger: '@',
+      label: 'Ada',
+      mount: (editor: Editor, appendTo: HTMLElement) => mountSuspended(EditorMentionMenu, {
+        props: { editor, appendTo, items: [{ label: 'Ada' }, { label: 'Grace' }] }
+      })
+    },
+    {
+      kind: 'emoji',
+      trigger: ':',
+      label: 'smile',
+      mount: (editor: Editor, appendTo: HTMLElement) => mountSuspended(EditorEmojiMenu, {
+        props: {
+          editor,
+          appendTo,
+          items: [
+            { name: 'smile', emoji: '🙂', shortcodes: ['smile'], tags: [] },
+            { name: 'wave', emoji: '👋', shortcodes: ['wave'], tags: [] }
+          ]
+        }
+      })
+    }
+  ])('keeps the $kind list open when focus enters it and restores focus on Escape', async ({ mount, trigger, label }, { onTestFinished }) => {
+    const { parent, editor } = mountEditor(onTestFinished)
+    const wrapper = await mount(editor, parent)
+    onTestFinished(() => wrapper.unmount())
+
+    const editable = editor.view.dom
+    editable.focus()
+    editor.commands.insertContent(trigger)
+    const listbox = await getListbox(parent)
+    expect(listbox.getAttribute('aria-label')).toBe('Suggestions')
+    expect(listbox.querySelector('[role=option]')?.textContent).toContain(label)
+
+    listbox.focus()
+    expect(document.activeElement).toBe(listbox)
+    const options = listbox.querySelectorAll('[role=option]')
+    listbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+    await vi.waitFor(() => expect(listbox.getAttribute('aria-activedescendant')).toBe(options[1]!.id))
+    listbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await vi.waitFor(() => expect(parent.querySelector('[role=listbox]')).toBeNull())
+    expect(document.activeElement).toBe(editable)
+    expect(editable.hasAttribute('aria-activedescendant')).toBe(false)
   })
 })

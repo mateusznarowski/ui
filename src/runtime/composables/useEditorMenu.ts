@@ -1,4 +1,4 @@
-import { ref, h, computed, unref, watch } from 'vue'
+import { ref, h, computed, unref, watch, watchPostEffect, onBeforeUnmount } from 'vue'
 import type { Ref, ComputedRef, MaybeRef } from 'vue'
 import { defu } from 'defu'
 import { useFilter } from './useFilter'
@@ -94,6 +94,7 @@ export interface EditorMenuOptions<T = any> {
 
 export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
   const menuId = `nuxt-ui-editor-menu-${++nextMenuId}`
+  let nextOptionId = 0
   const filteredItems: Ref<T[]> = ref([])
   const selectedIndex = ref(0)
   const menuState = ref<'closed' | 'open'>('closed')
@@ -105,7 +106,6 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
   let keyDownHandler: ((props: { event: KeyboardEvent }) => boolean) | null = null
   let globalKeyHandler: ((e: KeyboardEvent) => void) | null = null
   let triggerClientRect: (() => DOMRect | null) | null = null
-  let handleHover: ((index: number) => void) | null = null
   let scrollHandler: (() => void) | null = null
   let stopItemsWatch: (() => void) | null = null
 
@@ -234,9 +234,21 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
       .filter(group => group.length > 0)
   })
 
-  // Get only selectable items (excluding labels and separators) for keyboard navigation
   const isOption = (item: T) => (item as any).type !== 'label' && (item as any).type !== 'separator'
-  const selectableItems = computed(() => filteredItems.value.filter(isOption))
+  const selectableItems = computed(() => filteredGroups.value.flat().filter(isOption))
+  // Reuse IDs for surviving options so filtering cannot leave the active ID on a different item.
+  const optionIds = computed<{ byItem: Map<T, string[]>, ordered: string[] }>((previous) => {
+    const byItem = new Map<T, string[]>()
+    const ordered = selectableItems.value.map((item) => {
+      const ids = byItem.get(item) ?? []
+      const id = previous?.byItem.get(item)?.[ids.length] ?? `${menuId}-option-${++nextOptionId}`
+      ids.push(id)
+      byItem.set(item, ids)
+      return id
+    })
+    return { byItem, ordered }
+  })
+  const activeOptionId = computed(() => optionIds.value.ordered[selectedIndex.value])
 
   // Build middleware array based on options (following BubbleMenu pattern)
   const floatingUIOptions = defu(options.options, {
@@ -307,30 +319,7 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
       window.addEventListener('scroll', scrollHandler, true)
     }
 
-    // Define onHover handler that updates both state and renderer
-    handleHover = (index: number) => {
-      selectedIndex.value = index
-      if (renderer) {
-        renderer.updateProps({
-          groups: filteredGroups.value,
-          selectedIndex: index,
-          onSelect: commandFn,
-          onHover: handleHover!,
-          state: menuState.value
-        })
-      }
-    }
-
-    renderer = new VueRenderer(MenuComponent, {
-      props: {
-        groups: filteredGroups.value,
-        selectedIndex: selectedIndex.value,
-        onSelect: commandFn,
-        onHover: handleHover,
-        state: menuState.value
-      },
-      editor: options.editor
-    })
+    renderer = new VueRenderer(MenuComponent, { editor: options.editor })
 
     element = document.createElement('div')
     element.style.position = floatingUIOptions.strategy
@@ -371,7 +360,7 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
       filteredItems.value = normalizedItems.slice(0, limit)
 
       // Hide menu if no items
-      if (!filteredItems.value.length) {
+      if (!selectableItems.value.length) {
         cleanupMenu()
         return
       }
@@ -387,17 +376,6 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
         return
       }
 
-      // Update the renderer if it exists
-      if (renderer) {
-        renderer.updateProps({
-          groups: filteredGroups.value,
-          selectedIndex: selectedIndex.value,
-          onSelect: commandFn,
-          onHover: handleHover!,
-          state: menuState.value
-        })
-      }
-
       // Update position
       if (element) {
         updatePosition(element)
@@ -408,22 +386,30 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
   // Create the menu component using plain divs (not Reka UI components)
   // to prevent focus stealing and allow typing to pass through to the editor
   const MenuComponent = {
-    props: {
-      groups: { type: Array, required: true },
-      selectedIndex: { type: Number, required: true },
-      onSelect: { type: Function, required: true },
-      onHover: { type: Function, required: true },
-      state: { type: String, required: true }
-    },
-    setup(menuProps: any) {
-      function handleClick(e: MouseEvent, item: T, selectableIndex: number) {
-        e.preventDefault()
-        menuProps.onSelect(item, selectableIndex)
+    setup() {
+      const editorDom = options.editor.view.dom
+      const editorRole = editorDom.getAttribute('role') ?? ''
+      // Preserve a caller's role or existing control relationship.
+      if (['textbox', 'combobox', 'searchbox'].includes(editorRole)
+        && !editorDom.hasAttribute('aria-controls') && !editorDom.hasAttribute('aria-activedescendant')) {
+        editorDom.setAttribute('aria-controls', menuId)
+        watchPostEffect(() => {
+          if (editorDom.getAttribute('aria-controls') === menuId) {
+            if (activeOptionId.value) editorDom.setAttribute('aria-activedescendant', activeOptionId.value)
+            else editorDom.removeAttribute('aria-activedescendant')
+          }
+        })
+        onBeforeUnmount(() => {
+          if (editorDom.getAttribute('aria-controls') === menuId) editorDom.removeAttribute('aria-controls')
+          if (editorDom.getAttribute('aria-activedescendant')?.startsWith(`${menuId}-option-`)) {
+            editorDom.removeAttribute('aria-activedescendant')
+          }
+        })
       }
 
-      function handleMouseEnter(selectableIndex: number) {
-        // Update selected index on hover via callback
-        menuProps.onHover(selectableIndex)
+      function handleClick(e: MouseEvent, item: T) {
+        e.preventDefault()
+        commandFn?.(item)
       }
 
       return () => {
@@ -431,14 +417,16 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
 
         return h('div', {
           'class': options.ui.value.content(),
-          'data-state': menuProps.state
+          'data-state': menuState.value
         }, [
           h('div', {
+            'id': menuId,
             'class': options.ui.value.viewport(),
             'role': 'listbox',
             'tabindex': 0,
-            'aria-label': unref(options.ariaLabel)?.trim() || 'Suggestions'
-          }, (menuProps.groups as T[][]).map((group, groupIndex) => {
+            'aria-label': unref(options.ariaLabel)?.trim() || 'Suggestions',
+            'aria-activedescendant': activeOptionId.value
+          }, filteredGroups.value.map((group, groupIndex) => {
             // A flat group can contain several headings. Each names the options below it.
             let section: T[] = []
             const sections = [section]
@@ -485,17 +473,19 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
                 }
 
                 const selectableIndex = nextOptionIndex++
-                const isHighlighted = selectableIndex === menuProps.selectedIndex
+                const id = optionIds.value.ordered[selectableIndex]
+                const isHighlighted = selectableIndex === selectedIndex.value
 
                 return h('div', {
-                  'key': `item-${selectableIndex}`,
+                  'key': id,
+                  'id': id,
                   'class': options.ui.value.item({ class: itemData.class, active: false }),
                   'role': 'option',
                   'aria-selected': isHighlighted,
                   'data-highlighted': isHighlighted ? '' : undefined,
                   'data-disabled': itemData.disabled ? '' : undefined,
-                  'onMousedown': (e: MouseEvent) => handleClick(e, item, selectableIndex),
-                  'onMouseenter': () => handleMouseEnter(selectableIndex),
+                  'onMousedown': (e: MouseEvent) => handleClick(e, item),
+                  'onMouseenter': () => { selectedIndex.value = selectableIndex },
                   'ref': (el: any) => {
                     if (el && isHighlighted) {
                       el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
@@ -543,38 +533,34 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
 
         // Handle Escape
         if (event.key === 'Escape') {
+          const restoreFocus = element?.contains(document.activeElement)
           cleanupMenu()
+          if (restoreFocus) options.editor.view.focus()
           return true
+        }
+
+        const focusInMenu = !!element?.contains(event.target as Node)
+        if (!focusInMenu && (event.key === 'PageUp' || event.key === 'PageDown')) {
+          const viewport = element?.querySelector<HTMLElement>('[role=listbox]')
+          if (viewport && viewport.scrollHeight > viewport.clientHeight) {
+            viewport.scrollTop += event.key === 'PageDown' ? viewport.clientHeight : -viewport.clientHeight
+            return true
+          }
         }
 
         // Handle ArrowUp
         if (event.key === 'ArrowUp') {
           selectedIndex.value = (selectedIndex.value + selectableItems.value.length - 1) % selectableItems.value.length
-          renderer?.updateProps({
-            groups: filteredGroups.value,
-            selectedIndex: selectedIndex.value,
-            onSelect: commandFn,
-            onHover: handleHover!,
-            state: menuState.value
-          })
           return true
         }
 
         // Handle ArrowDown
         if (event.key === 'ArrowDown') {
           selectedIndex.value = (selectedIndex.value + 1) % selectableItems.value.length
-          renderer?.updateProps({
-            groups: filteredGroups.value,
-            selectedIndex: selectedIndex.value,
-            onSelect: commandFn,
-            onHover: handleHover!,
-            state: menuState.value
-          })
           return true
         }
 
         // Handle Enter or Tab
-        const focusInMenu = !!element?.contains(event.target as Node)
         if (event.key === 'Enter' || (event.key === 'Tab' && !focusInMenu)) {
           const selectedItem = selectableItems.value[selectedIndex.value]
           if (selectedItem && commandFn) {
@@ -610,7 +596,7 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
             : suggestionProps.items as T[]
 
           // Only show menu if there are items
-          if (!filteredItems.value.length) {
+          if (!selectableItems.value.length) {
             return
           }
 
@@ -637,7 +623,7 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
           }
 
           // Hide menu if no items
-          if (!filteredItems.value.length) {
+          if (!selectableItems.value.length) {
             cleanupMenu()
             return
           }
@@ -645,15 +631,6 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
           // Show menu if it was hidden
           if (!renderer) {
             showMenu()
-          } else {
-            // Update existing renderer
-            renderer.updateProps({
-              groups: filteredGroups.value,
-              selectedIndex: selectedIndex.value,
-              onSelect: commandFn,
-              onHover: handleHover!,
-              state: menuState.value
-            })
           }
 
           if (element) {
@@ -675,30 +652,7 @@ export function useEditorMenu<T = any>(options: EditorMenuOptions<T>) {
 
   // Cleanup function for when the composable is destroyed (always runs regardless of state)
   const destroy = () => {
-    menuState.value = 'closed'
-
-    if (globalKeyHandler) {
-      document.removeEventListener('keydown', globalKeyHandler, true)
-      globalKeyHandler = null
-    }
-    options.editor.view.dom.removeEventListener('blur', onFocusOut)
-    element?.removeEventListener('focusout', onFocusOut)
-    if (scrollHandler) {
-      window.removeEventListener('scroll', scrollHandler, true)
-      scrollHandler = null
-    }
-    if (element && handleMouseDown) {
-      element.removeEventListener('mousedown', handleMouseDown)
-      handleMouseDown = null
-    }
-    if (renderer) {
-      renderer.destroy()
-      renderer = null
-    }
-    if (element) {
-      element.remove()
-      element = null
-    }
+    cleanupMenu()
     if (stopItemsWatch) {
       stopItemsWatch()
       stopItemsWatch = null
