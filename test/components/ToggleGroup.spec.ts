@@ -1,7 +1,8 @@
-import { describe, it, expect, test } from 'vitest'
+import { describe, it, expect, test, expectTypeOf } from 'vitest'
 import { axe } from 'vitest-axe'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import ToggleGroup from '../../src/runtime/components/ToggleGroup.vue'
+import type { ToggleGroupEmits, ToggleGroupProps } from '../../src/runtime/components/ToggleGroup.vue'
 import { flushPromises } from '@vue/test-utils'
 import { renderEach } from '../component-render'
 import { renderForm } from '../utils/form'
@@ -70,6 +71,26 @@ describe('ToggleGroup', () => {
     await buttons[1]!.trigger('click')
     expect(wrapper.emitted('update:modelValue')).toEqual([[['left']], [['left', 'center']]])
     expect(buttons.map(button => button.attributes('aria-pressed'))).toEqual(['true', 'true', 'false'])
+  })
+
+  test('accepts boolean model values', () => {
+    expectTypeOf<boolean>().toExtend<ToggleGroupProps['modelValue']>()
+    expectTypeOf<boolean>().toExtend<ToggleGroupProps['defaultValue']>()
+    expectTypeOf<(string | boolean)[]>().toExtend<ToggleGroupProps['modelValue']>()
+    expectTypeOf<[boolean]>().toExtend<ToggleGroupEmits['update:modelValue']>()
+    expectTypeOf<(string | boolean)[]>().toExtend<ToggleGroupEmits['update:modelValue'][0]>()
+  })
+
+  it('presses and clears a false value', async () => {
+    const wrapper = await mountSuspended(ToggleGroup, { props: { items: [{ value: false, label: 'Off' }] } })
+    const button = wrapper.get('button')
+
+    expect(button.attributes('aria-pressed')).toBe('false')
+    await button.trigger('click')
+    expect(button.attributes('aria-pressed')).toBe('true')
+    await button.trigger('click')
+    expect(button.attributes('aria-pressed')).toBe('false')
+    expect(wrapper.emitted('update:modelValue')).toEqual([[false], [undefined]])
   })
 
   it('passes accessibility tests', async () => {

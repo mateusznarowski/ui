@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { ToggleGroupRootProps, ToggleGroupRootEmits } from 'reka-ui'
+import type { AcceptableValue as RekaAcceptableValue, ToggleGroupRootProps } from 'reka-ui'
 import type { VNode } from 'vue'
 import type { AppConfig } from '@nuxt/schema'
 import theme from '#build/ui/toggle-group'
@@ -9,6 +9,8 @@ import type { AcceptableValue, GetItemKeys } from '../types/utils'
 import type { ComponentConfig } from '../types/tv'
 
 type ToggleGroup = ComponentConfig<typeof theme, AppConfig, 'toggleGroup'>
+// Reka excludes booleans from its public types, but ToggleGroup already accepts them at runtime.
+type ToggleGroupValue = RekaAcceptableValue | boolean
 
 export interface ToggleGroupItem extends Omit<ButtonProps, Exclude<LinkPropsKeys, 'activeClass' | 'inactiveClass'> | 'type' | 'loadingAuto'> {
   /**
@@ -18,7 +20,7 @@ export interface ToggleGroupItem extends Omit<ButtonProps, Exclude<LinkPropsKeys
   [key: string]: any
 }
 
-export interface ToggleGroupProps<T extends ToggleGroupItem = ToggleGroupItem> extends Pick<ToggleGroupRootProps, 'type' | 'modelValue' | 'defaultValue' | 'disabled' | 'loop' | 'rovingFocus' | 'name' | 'required'> {
+export interface ToggleGroupProps<T extends ToggleGroupItem = ToggleGroupItem> extends Pick<ToggleGroupRootProps<ToggleGroupValue | ToggleGroupValue[]>, 'type' | 'modelValue' | 'defaultValue' | 'disabled' | 'loop' | 'rovingFocus' | 'name' | 'required'> {
   /**
    * The element or component this component should render as.
    * @defaultValue 'div'
@@ -67,8 +69,9 @@ export interface ToggleGroupProps<T extends ToggleGroupItem = ToggleGroupItem> e
   ui?: ToggleGroup['slots']
 }
 
-export interface ToggleGroupEmits extends ToggleGroupRootEmits {
-  change: [event: Event]
+export interface ToggleGroupEmits {
+  'update:modelValue': [value: ToggleGroupValue | ToggleGroupValue[]]
+  'change': [event: Event]
 }
 
 type SlotProps<T extends ToggleGroupItem> = (props: { item: T, index: number, pressed: boolean, ui: Parameters<NonNullable<ButtonSlots['default']>>[0]['ui'] }) => VNode[]
@@ -168,7 +171,7 @@ function onUpdate(value: any) {
 <template>
   <ToggleGroupRoot
     :id="id"
-    v-bind="{ ...rootProps, ...ariaAttrs }"
+    v-bind="{ ...(rootProps as Partial<ToggleGroupRootProps>), ...ariaAttrs }"
     :name="disabled ? undefined : name"
     :disabled="disabled"
     :aria-labelledby="($attrs['aria-labelledby'] as string | undefined) ?? ($attrs['aria-label'] ? undefined : labelId)"
