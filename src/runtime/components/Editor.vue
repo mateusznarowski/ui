@@ -274,6 +274,27 @@ watch(() => props.editable, (editable) => {
   editor.value?.setEditable(editable ?? true, false)
 })
 
+watch(editorProps, (next, previous) => {
+  const instance = editor.value
+  if (!instance) {
+    return
+  }
+
+  // Tiptap composes these props with extensions when creating the view.
+  const managedProps = ['dispatchTransaction', 'transformPastedHTML', 'nodeViews', 'markViews']
+  const keys = Object.keys({ ...previous, ...next }) as (keyof typeof next)[]
+  const changes = Object.fromEntries(keys
+    .filter(key => !managedProps.includes(key) && previous[key] !== next[key])
+    .map(key => [key, next[key]]))
+
+  const patch = { ...changes, attributes: next.attributes }
+  const current = instance.options.editorProps
+
+  // setOptions replaces the stored editorProps. Keep unrelated options without reapplying them to the view.
+  instance.setOptions({ editorProps: patch })
+  instance.options.editorProps = { ...current, ...patch }
+})
+
 watch(() => props.modelValue, (newVal) => {
   if (!editor.value || newVal == null) {
     return
